@@ -1,2 +1,3 @@
-# generic-template
-My custom template for generic repositories
+# Python ClassMapper
+
+A simple class mapping (conversion) Python library.

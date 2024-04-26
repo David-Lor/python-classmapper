@@ -1,7 +1,21 @@
 name: Release
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      version:
+        required: true
+        description: Version to release
+      test-repository:
+        required: true
+        type: boolean
+        default: true
+        description: Upload to Test PyPI repository?
+      test-package:
+        required: true
+        type: boolean
+        default: true
+        description: Try installing from Test PyPI repository?
 
 jobs:
   Release:
@@ -11,3 +25,74 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Set version
+        run: echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_ENV
+      - name: Validate version
+        run: test "${{ env.VERSION }}"
+
+      - name: Override version in setup.py
+        shell: python
+        run: |-
+          FILE = "setup.py"
+          with open(FILE, "r") as f:
+            data = f.read()
+
+          data = data.replace("$VERSION$", "${{ github.event.inputs.version }}")
+          with open(FILE, "w") as f:
+            f.write(data)
+
+      - name: Set PyPI repository/token (production)
+        if: ${{ github.event.inputs.test-repository == 'false' }}
+        run: |-
+          echo "PYPI_REPOSITORY=https://upload.pypi.org/legacy/" >> $GITHUB_ENV
+          echo "PYPI_TOKEN=${{ secrets.PYPI_TOKEN }}" >> $GITHUB_ENV
+
+      - name: Set PyPI repository/token (test)
+        if: ${{ github.event.inputs.test-repository == 'true' }}
+        run: |-
+          echo "PYPI_REPOSITORY=https://test.pypi.org/legacy/" >> $GITHUB_ENV
+          echo "PYPI_TOKEN=${{ secrets.PYPI_TEST_TOKEN }}" >> $GITHUB_ENV
+
+      - name: Build package
+        run: python setup.py sdist
+
+      - name: Publish package to PyPI
+        uses: pypa/gh-action-pypi-publish@3fbcf7ccf443305955ce16db9de8401f7dc1c7dd
+        with:
+          repository_url: ${{ env.PYPI_REPOSITORY }}
+          password: ${{ env.PYPI_TOKEN }}
+
+  TestRelease:
+    name: Test Release
+    if: ${{ github.event.inputs.test-repository == 'true' && github.event.inputs.test-package == 'true' }}
+    runs-on: ubuntu-latest
+    container: "python:3.10"
+    needs:
+      - Release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # TODO allow testing from production index
+      - name: Install classmapper package
+        uses: nick-fields/retry@v2
+        with:
+          timeout_seconds: 30
+          max_attempts: 12
+          retry_wait_seconds: 5
+          retry_on: error
+          command: pip install --index-url="https://test.pypi.org/simple/" "classmapper==${{ github.event.inputs.version }}"
+      - name: Install test requirements
+        run: pip install -r requirements-test.txt
+
+      - name: Move tests directory
+        run: mv tests /tmp/classmapper-tests
+      - name: Run tests
+        working-directory: /tmp/classmapper-tests
+        run: pytest -sv .
